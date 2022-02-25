@@ -8,7 +8,8 @@ if __name__ == "__main__":
 
     import utils
     from utils import device
-    from model import ACModel
+    from model import ACModel, DQNModel
+    from scripts import custom_algo
 
 
     # Parse arguments
@@ -98,6 +99,7 @@ if __name__ == "__main__":
 
     envs = []
     for i in range(args.procs):
+        print(args.env)
         envs.append(utils.make_env(args.env, args.seed + 10000 * i))
     txt_logger.info("Environments loaded\n")
 
@@ -117,22 +119,29 @@ if __name__ == "__main__":
     txt_logger.info("Observations preprocessor loaded")
 
     # Load model
-
-    acmodel = ACModel(obs_space, envs[0].action_space, args.mem, args.text)
+    if args.algo == "DQN":
+        model = DQNModel(obs_space, envs[0].action_space, args.mem, args.text)
+    else:     
+        model = ACModel(obs_space, envs[0].action_space, args.mem, args.text)
+      
     if "model_state" in status:
-        acmodel.load_state_dict(status["model_state"])
-    acmodel.to(device)
+        model.load_state_dict(status["model_state"])
+    model.to(device)
     txt_logger.info("Model loaded\n")
-    txt_logger.info("{}\n".format(acmodel))
+    txt_logger.info("{}\n".format(model))
 
     # Load algo
-
-    if args.algo == "a2c":
-        algo = torch_ac.A2CAlgo(envs, acmodel, device, args.frames_per_proc, args.discount, args.lr, args.gae_lambda,
+    if args.algo == "DQN":
+        epsilon = 0.1
+        algo = custom_algo.DQNAlgo(envs, model, device, args.frames_per_proc, args.discount, args.lr, args.gae_lambda,
+                                args.entropy_coef, args.value_loss_coef, args.max_grad_norm, args.recurrence,
+                                args.optim_alpha, args.optim_eps, preprocess_obss, epsilon=epsilon)
+    elif args.algo == "a2c":
+        algo = torch_ac.A2CAlgo(envs, model, device, args.frames_per_proc, args.discount, args.lr, args.gae_lambda,
                                 args.entropy_coef, args.value_loss_coef, args.max_grad_norm, args.recurrence,
                                 args.optim_alpha, args.optim_eps, preprocess_obss)
     elif args.algo == "ppo":
-        algo = torch_ac.PPOAlgo(envs, acmodel, device, args.frames_per_proc, args.discount, args.lr, args.gae_lambda,
+        algo = torch_ac.PPOAlgo(envs, model, device, args.frames_per_proc, args.discount, args.lr, args.gae_lambda,
                                 args.entropy_coef, args.value_loss_coef, args.max_grad_norm, args.recurrence,
                                 args.optim_eps, args.clip_eps, args.epochs, args.batch_size, preprocess_obss)
     else:
@@ -197,7 +206,7 @@ if __name__ == "__main__":
 
         if args.save_interval > 0 and update % args.save_interval == 0:
             status = {"num_frames": num_frames, "update": update,
-                    "model_state": acmodel.state_dict(), "optimizer_state": algo.optimizer.state_dict()}
+                    "model_state": model.state_dict(), "optimizer_state": algo.optimizer.state_dict()}
             if hasattr(preprocess_obss, "vocab"):
                 status["vocab"] = preprocess_obss.vocab.vocab
             utils.save_status(status, model_dir)
