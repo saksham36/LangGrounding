@@ -8,7 +8,7 @@ if __name__ == "__main__":
 
     import utils
     from utils import device
-    from model import ACModel, DQNModel
+    from model import ACModel, DQNModel, BootDQNModel
     from scripts import custom_algo
 
 
@@ -63,6 +63,9 @@ if __name__ == "__main__":
                         help="number of time-steps gradient is backpropagated (default: 1). If > 1, a LSTM is added to the model to have memory.")
     parser.add_argument("--text", action="store_true", default=False,
                         help="add a GRU to the model to handle text input")
+    parser.add_argument("--epsilon", type=float, default=0.9, help="epsilon for epsilon greedy Q learning")
+    parser.add_argument("--num_ensemble", type=int, default=2, help="number of ensembles for bootstrapped DQN")
+    parser.add_argument("--mask_prob", type=float, default=0.9, help="mask probabilities for bootstrapped DQN")
 
     args = parser.parse_args()
 
@@ -74,6 +77,7 @@ if __name__ == "__main__":
     default_model_name = f"{args.env}_{args.algo}_seed{args.seed}_{date}"
 
     model_name = args.model or default_model_name
+    print(f'Model_name: {model_name}')
     model_dir = utils.get_model_dir(model_name)
 
     # Load loggers and Tensorboard writer
@@ -119,11 +123,13 @@ if __name__ == "__main__":
     txt_logger.info("Observations preprocessor loaded")
 
     # Load model
-    if args.algo == "DQN":
+    if args.algo=="BootDQN":
+         model = BootDQNModel(obs_space, envs[0].action_space, args.num_ensemble, args.mask_prob, args.mem, args.text)
+    elif args.algo == "DQN":
         model = DQNModel(obs_space, envs[0].action_space, args.mem, args.text)
     else:     
         model = ACModel(obs_space, envs[0].action_space, args.mem, args.text)
-      
+    import pdb; pdb.set_trace()
     if "model_state" in status:
         model.load_state_dict(status["model_state"])
     model.to(device)
@@ -131,11 +137,13 @@ if __name__ == "__main__":
     txt_logger.info("{}\n".format(model))
 
     # Load algo
-    if args.algo == "DQN":
-        epsilon = 0.1
+    if args.algo == "BootDQN":
+        raise NotImplementedError
+
+    elif args.algo == "DQN":
         algo = custom_algo.DQNAlgo(envs, model, device, args.frames_per_proc, args.discount, args.lr, args.gae_lambda,
                                 args.entropy_coef, args.value_loss_coef, args.max_grad_norm, args.recurrence,
-                                args.optim_alpha, args.optim_eps, preprocess_obss, epsilon=epsilon)
+                                args.optim_alpha, args.optim_eps, preprocess_obss, epsilon=args.epsilon)
     elif args.algo == "a2c":
         algo = torch_ac.A2CAlgo(envs, model, device, args.frames_per_proc, args.discount, args.lr, args.gae_lambda,
                                 args.entropy_coef, args.value_loss_coef, args.max_grad_norm, args.recurrence,
@@ -184,12 +192,19 @@ if __name__ == "__main__":
             data += rreturn_per_episode.values()
             header += ["num_frames_" + key for key in num_frames_per_episode.keys()]
             data += num_frames_per_episode.values()
-            header += ["entropy", "value", "policy_loss", "value_loss", "grad_norm"]
-            data += [logs["entropy"], logs["value"], logs["policy_loss"], logs["value_loss"], logs["grad_norm"]]
-
-            txt_logger.info(
-                "U {} | F {:06} | FPS {:04.0f} | D {} | rR:μσmM {:.2f} {:.2f} {:.2f} {:.2f} | F:μσmM {:.1f} {:.1f} {} {} | H {:.3f} | V {:.3f} | pL {:.3f} | vL {:.3f} | ∇ {:.3f}"
+            if args.algo == "DQN" or args.algo =="BootDQN":
+                header += ["value", "value_loss", "grad_norm"]
+                data += [logs["value"], logs["value_loss"], logs["grad_norm"]]
+                txt_logger.info(
+                "U {} | F {:06} | FPS {:04.0f} | D {} | rR:μσmM {:.2f} {:.2f} {:.2f} {:.2f} | F:μσmM {:.1f} {:.1f} {} {} | V {:.3f} | vL {:.3f} | ∇ {:.3f}"
                 .format(*data))
+            else:
+                header += ["entropy", "value", "policy_loss", "value_loss", "grad_norm"]
+                data += [logs["entropy"], logs["value"], logs["policy_loss"], logs["value_loss"], logs["grad_norm"]]
+
+                txt_logger.info(
+                    "U {} | F {:06} | FPS {:04.0f} | D {} | rR:μσmM {:.2f} {:.2f} {:.2f} {:.2f} | F:μσmM {:.1f} {:.1f} {} {} | H {:.3f} | V {:.3f} | pL {:.3f} | vL {:.3f} | ∇ {:.3f}"
+                    .format(*data))
 
             header += ["return_" + key for key in return_per_episode.keys()]
             data += return_per_episode.values()

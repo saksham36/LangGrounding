@@ -47,17 +47,19 @@ class DQNAlgo(BaseAlgo):
             preprocessed_obs = self.preprocess_obss(self.obs, device=self.device)
             with torch.no_grad():
                 if self.acmodel.recurrent:
-                    dist, value, memory = self.acmodel(preprocessed_obs, self.memory * self.mask.unsqueeze(1))
+                    Q, memory = self.acmodel(preprocessed_obs, self.memory * self.mask.unsqueeze(1))
                 else:
-                    dist, value = self.acmodel(preprocessed_obs)
-    
-            max_action = torch.max(dist.logits,1)[1]
+                    Q = self.acmodel(preprocessed_obs)
+            
+            max_action = torch.max(Q,1)[1]
+            q_eval = Q[max_action]
+
             prob = torch.rand(max_action.shape)
             action = max_action # max_action will also get modified
-            for eps_idx in range(prob.shape[0]):
+            for eps_idx in range(prob.shape[0]): # iterating through env
                 if prob[eps_idx] < self.eps:
-                    action[eps_idx] = random.randint(0,6)
-        
+                    action[eps_idx] = random.randint(0,self.envs[0].action_space.n -1)
+            
             obs, reward, done, _ = self.env.step(action.cpu().numpy())
 
             
@@ -71,7 +73,7 @@ class DQNAlgo(BaseAlgo):
             self.masks[i] = self.mask
             self.mask = 1 - torch.tensor(done, device=self.device, dtype=torch.float)
             self.actions[i] = action
-            self.values[i] = value
+            self.values[i] = q_eval
             if self.reshape_reward is not None:
                 self.rewards[i] = torch.tensor([
                     self.reshape_reward(obs_, action_, reward_, done_)
@@ -79,7 +81,7 @@ class DQNAlgo(BaseAlgo):
                 ], device=self.device)
             else:
                 self.rewards[i] = torch.tensor(reward, device=self.device)
-            self.log_probs[i] = dist.log_prob(action)
+            
 
             # Update log values
 
@@ -103,10 +105,10 @@ class DQNAlgo(BaseAlgo):
         preprocessed_obs = self.preprocess_obss(self.obs, device=self.device)
         with torch.no_grad():
             if self.acmodel.recurrent:
-                _, next_value, _ = self.acmodel(preprocessed_obs, self.memory * self.mask.unsqueeze(1))
+                Q_next, _ = self.acmodel(preprocessed_obs, self.memory * self.mask.unsqueeze(1))
             else:
-                _, next_value = self.acmodel(preprocessed_obs)
-
+                Q_next = self.acmodel(preprocessed_obs)
+            next_value = Q_next[torch.max(Q_next,1)[1]]
         for i in reversed(range(self.num_frames_per_proc)):
             next_mask = self.masks[i+1] if i < self.num_frames_per_proc - 1 else self.mask
             next_value = self.values[i+1] if i < self.num_frames_per_proc - 1 else next_value
@@ -138,7 +140,6 @@ class DQNAlgo(BaseAlgo):
         exps.reward = self.rewards.transpose(0, 1).reshape(-1)
         exps.advantage = self.advantages.transpose(0, 1).reshape(-1)
         exps.returnn = exps.value + exps.advantage
-        exps.log_prob = self.log_probs.transpose(0, 1).reshape(-1)
 
         # Preprocess experiences
 
@@ -188,35 +189,35 @@ class DQNAlgo(BaseAlgo):
             # Compute loss
 
             if self.acmodel.recurrent:
-                dist, value, memory = self.acmodel(sb.obs, memory * sb.mask)
+                Q, memory = self.acmodel(sb.obs, memory * sb.mask)
             else:
-                dist, value = self.acmodel(sb.obs)
+                Q = self.acmodel(sb.obs)
+            value = Q[torch.max(Q,1)[1]]
+            # entropy = dist.entropy().mean()
 
-            entropy = dist.entropy().mean()
-
-            policy_loss = -(dist.log_prob(sb.action) * sb.advantage).mean()
+            # policy_loss = -(dist.log_prob(sb.action) * sb.advantage).mean()
 
             value_loss = (value - sb.returnn).pow(2).mean()
 
-            loss = policy_loss - self.entropy_coef * entropy + self.value_loss_coef * value_loss
-
+            # loss = policy_loss - self.entropy_coef * entropy + self.value_loss_coef * value_loss
+            loss = value_loss
             # Update batch values
 
-            update_entropy += entropy.item()
+            # update_entropy += entropy.item()
             update_value += value.mean().item()
-            update_policy_loss += policy_loss.item()
+            # update_policy_loss += policy_loss.item()
             update_value_loss += value_loss.item()
             update_loss += loss
 
         # Update update values
 
-        update_entropy /= self.recurrence
+        # update_entropy /= self.recurrence
         update_value /= self.recurrence
-        update_policy_loss /= self.recurrence
+        # update_policy_loss /= self.recurrence
         update_value_loss /= self.recurrence
         update_loss /= self.recurrence
 
-        # Update actor-critic
+        # Update Q
 
         self.optimizer.zero_grad()
         update_loss.backward()
@@ -227,9 +228,9 @@ class DQNAlgo(BaseAlgo):
         # Log some values
 
         logs = {
-            "entropy": update_entropy,
+            # "entropy": update_entropy,
             "value": update_value,
-            "policy_loss": update_policy_loss,
+            # "policy_loss": update_policy_loss,
             "value_loss": update_value_loss,
             "grad_norm": update_grad_norm
         }
