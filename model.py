@@ -66,9 +66,11 @@ class BootDQNModel(nn.Module, torch_ac.RecurrentACModel):
         )
         # Making an list of Q functions of size num_ensemble
         self.Qs = [self.Q for _ in range(num_ensemble)]
+        # self.active_head = self.Qs[0]
         # Initialize parameters correctly
         self.apply(init_params)
 
+        
         return 
 
     @property
@@ -96,17 +98,12 @@ class BootDQNModel(nn.Module, torch_ac.RecurrentACModel):
         if self.use_text:
             embed_text = self._get_embed_text(obs.text)
             embedding = torch.cat((embedding, embed_text), dim=1)
-        # Putting it through the
-        Q = self.Qs[model_idx].Q(embedding)
-        dist = Categorical(logits=F.log_softmax(Q, dim=1))
+        # Putting it through the Q head
+        Q = self.Qs[model_idx](embedding)
+        # dist = Categorical(logits=F.log_softmax(Q, dim=1))
+        # value = torch.max(Q,-1)[0]
 
-        # print(f'DQN: {type(Q)}')
-        # print(Q.shape)
-        value = torch.max(Q,-1)[0]
-        # print(f'value: {type(value)}')
-        # print(value.shape)
-        # assert 0
-        return dist, value, memory
+        return Q, memory
 
     def _get_embed_text(self, text):
         _, hidden = self.text_rnn(self.word_embedding(text))
@@ -187,15 +184,16 @@ class DQNModel(nn.Module, torch_ac.RecurrentACModel):
             embedding = torch.cat((embedding, embed_text), dim=1)
 
         Q = self.actor(embedding)
-        dist = Categorical(logits=F.log_softmax(Q, dim=1))
+        return Q, memory
+        # dist = Categorical(logits=F.log_softmax(Q, dim=1))
 
-        # print(f'DQN: {type(Q)}')
-        # print(Q.shape)
-        value = torch.max(Q,-1)[0]
-        # print(f'value: {type(value)}')
-        # print(value.shape)
-        # assert 0
-        return dist, value, memory
+        # # print(f'DQN: {type(Q)}')
+        # # print(Q.shape)
+        # value = torch.max(Q,-1)[0]
+        # # print(f'value: {type(value)}')
+        # # print(value.shape)
+        # # assert 0
+        # return dist, value, memory
 
     def _get_embed_text(self, text):
         _, hidden = self.text_rnn(self.word_embedding(text))

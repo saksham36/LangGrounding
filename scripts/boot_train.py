@@ -11,6 +11,11 @@ if __name__ == "__main__":
     from model import ACModel, DQNModel, BootDQNModel
     from scripts import custom_algo
 
+    from tqdm import tqdm
+    import math
+    import numpy as np
+    import random
+
 
     # Parse arguments
 
@@ -25,14 +30,14 @@ if __name__ == "__main__":
                         help="name of the model (default: {ENV}_{ALGO}_{TIME})")
     parser.add_argument("--seed", type=int, default=1,
                         help="random seed (default: 1)")
-    parser.add_argument("--log-interval", type=int, default=1,
+    parser.add_argument("--log-interval", type=int, default=10,
                         help="number of updates between two logs (default: 1)")
     parser.add_argument("--save-interval", type=int, default=10,
                         help="number of updates between two saves (default: 10, 0 means no saving)")
     parser.add_argument("--procs", type=int, default=16,
                         help="number of processes (default: 16)")
-    parser.add_argument("--frames", type=int, default=10**7,
-                        help="number of frames of training (default: 1e7)")
+    parser.add_argument("--num_episodes", type=int, default=10**7,
+                        help="number of episodes of training (default: 1e7)")
 
     ## Parameters for main algorithm
     parser.add_argument("--epochs", type=int, default=4,
@@ -55,20 +60,16 @@ if __name__ == "__main__":
                         help="maximum norm of gradient (default: 0.5)")
     parser.add_argument("--optim-eps", type=float, default=1e-8,
                         help="Adam and RMSprop optimizer epsilon (default: 1e-8)")
-    parser.add_argument("--optim-alpha", type=float, default=0.99,
-                        help="RMSprop optimizer alpha (default: 0.99)")
     parser.add_argument("--clip-eps", type=float, default=0.2,
                         help="clipping epsilon for PPO (default: 0.2)")
     parser.add_argument("--recurrence", type=int, default=1,
                         help="number of time-steps gradient is backpropagated (default: 1). If > 1, a LSTM is added to the model to have memory.")
     parser.add_argument("--text", action="store_true", default=False,
                         help="add a GRU to the model to handle text input")
-    parser.add_argument("--epsilon", type=float, default=0.9, help="epsilon for epsilon greedy Q learning")
     parser.add_argument("--num_ensemble", type=int, default=2, help="number of ensembles for bootstrapped DQN")
     parser.add_argument("--mask_prob", type=float, default=0.9, help="mask probabilities for bootstrapped DQN")
 
     args = parser.parse_args()
-
     args.mem = args.recurrence > 1
 
     # Set run dir
@@ -99,63 +100,38 @@ if __name__ == "__main__":
 
     txt_logger.info(f"Device: {device}\n")
 
-    # Load environments
-
-    envs = []
-    for i in range(args.procs):
-        print(i)
-        print(args.env)
-        print(50*"*")
-        envs.append(utils.make_env(args.env, args.seed + 10000 * i))
-    txt_logger.info("Environments loaded\n")
-
+    # Load environment
+    env = utils.make_env(args.env, args.seed + 0)
+   
     # Load training status
 
     try:
         status = utils.get_status(model_dir)
     except OSError:
-        status = {"num_frames": 0, "update": 0}
+        status = {"num_episodes": 0, "update": 0}
     txt_logger.info("Training status loaded\n")
 
     # Load observations preprocessor
 
-    obs_space, preprocess_obss = utils.get_obss_preprocessor(envs[0].observation_space)
+    obs_space, preprocess_obss = utils.get_obss_preprocessor(env.observation_space)
     if "vocab" in status:
         preprocess_obss.vocab.load_vocab(status["vocab"])
     txt_logger.info("Observations preprocessor loaded")
 
     # Load model
     if args.algo=="BootDQN":
-         model = BootDQNModel(obs_space, envs[0].action_space, args.num_ensemble, args.mask_prob, args.mem, args.text)
-    elif args.algo == "DQN":
-        model = DQNModel(obs_space, envs[0].action_space, args.mem, args.text)
-    else:     
-        model = ACModel(obs_space, envs[0].action_space, args.mem, args.text)
+         model = BootDQNModel(obs_space, env.action_space, args.num_ensemble, args.mask_prob, args.mem, args.text)
+
     if "model_state" in status:
         model.load_state_dict(status["model_state"])
     model.to(device)
     txt_logger.info("Model loaded\n")
     txt_logger.info("{}\n".format(model))
-
     # Load algo
     if args.algo == "BootDQN":
-        algo = custom_algo.BootDQNAlgo(envs, model, device, args.frames_per_proc, args.discount, args.lr, args.gae_lambda,
-                                args.entropy_coef, args.value_loss_coef, args.max_grad_norm, args.recurrence,
-                                args.optim_alpha, args.optim_eps, preprocess_obss, 
-                                num_ensemble=args.num_ensemble, mask_prob=mask_prob)
-
-    elif args.algo == "DQN":
-        algo = custom_algo.DQNAlgo(envs, model, device, args.frames_per_proc, args.discount, args.lr, args.gae_lambda,
-                                args.entropy_coef, args.value_loss_coef, args.max_grad_norm, args.recurrence,
-                                args.optim_alpha, args.optim_eps, preprocess_obss, epsilon=args.epsilon)
-    elif args.algo == "a2c":
-        algo = torch_ac.A2CAlgo(envs, model, device, args.frames_per_proc, args.discount, args.lr, args.gae_lambda,
-                                args.entropy_coef, args.value_loss_coef, args.max_grad_norm, args.recurrence,
-                                args.optim_alpha, args.optim_eps, preprocess_obss)
-    elif args.algo == "ppo":
-        algo = torch_ac.PPOAlgo(envs, model, device, args.frames_per_proc, args.discount, args.lr, args.gae_lambda,
-                                args.entropy_coef, args.value_loss_coef, args.max_grad_norm, args.recurrence,
-                                args.optim_eps, args.clip_eps, args.epochs, args.batch_size, preprocess_obss)
+        algo = custom_algo.BootDQNAlgo([env], model, device, args.frames_per_proc, args.discount, args.lr, args.max_grad_norm, args.recurrence,
+                                preprocess_obss, 
+                                num_ensemble=args.num_ensemble, mask_prob=args.mask_prob)
     else:
         raise ValueError("Incorrect algorithm name: {}".format(args.algo))
 
@@ -164,56 +140,62 @@ if __name__ == "__main__":
     txt_logger.info("Optimizer loaded\n")
 
     # Train model
-
-    num_frames = status["num_frames"]
+    num_frames = status["num_episodes"]
     update = status["update"]
     start_time = time.time()
-
-    while num_frames < args.frames:
+    print(50*"*")
+    timestep = 0
+    update = 0
+    for eps_idx in tqdm(range(num_frames,args.num_episodes)):
         # Update model parameters
+        env = utils.make_env(args.env, args.seed + 10000 * eps_idx)
+        obs = env.reset()
+        Q_idx = random.randint(0,args.num_ensemble-1) # active head
+        episode_reward = 0
+        done = False
+        discount = 1
+        log_episode_return = 0
+        while not done: # Collect experience using a given Q_idx
+            # Generate an action from the agent's policy.
+            action = algo.select_action(obs, Q_idx)
+            
+            # Step the environment.
+            obs_, reward, done, _ = env.step(action)
 
-        update_start_time = time.time()
-        exps, logs1 = algo.collect_experiences()
-        logs2 = algo.update_parameters(exps)
-        logs = {**logs1, **logs2}
-        update_end_time = time.time()
+            # Tell the agent about what just happened.
+            timestep += 1
+            # Sample minibatch and update
+            logs_temp = algo.update(obs, action, reward, obs_, timestep)
+            if logs_temp is not None and len(logs_temp) > 0: #Only store the one last updated
+                logs = logs_temp
 
-        num_frames += logs["num_frames"]
-        update += 1
 
+            # Book keeping
+            obs = obs_
+            episode_reward += reward
+
+        # Log keeping
+        log_episode_return = episode_reward
+        num_frames+=1
         # Print logs
 
-        if update % args.log_interval == 0:
-            fps = logs["num_frames"]/(update_end_time - update_start_time)
+        if eps_idx % args.log_interval == 0:
+            update += 1
             duration = int(time.time() - start_time)
-            return_per_episode = utils.synthesize(logs["return_per_episode"])
-            rreturn_per_episode = utils.synthesize(logs["reshaped_return_per_episode"])
-            num_frames_per_episode = utils.synthesize(logs["num_frames_per_episode"])
+            return_per_episode = episode_reward
 
-            header = ["update", "frames", "FPS", "duration"]
-            data = [update, num_frames, fps, duration]
-            header += ["rreturn_" + key for key in rreturn_per_episode.keys()]
-            data += rreturn_per_episode.values()
-            header += ["num_frames_" + key for key in num_frames_per_episode.keys()]
-            data += num_frames_per_episode.values()
-            if args.algo == "DQN" or args.algo =="BootDQN":
-                header += ["value", "value_loss", "grad_norm"]
-                data += [logs["value"], logs["value_loss"], logs["grad_norm"]]
-                txt_logger.info(
-                "U {} | F {:06} | FPS {:04.0f} | D {} | rR:μσmM {:.2f} {:.2f} {:.2f} {:.2f} | F:μσmM {:.1f} {:.1f} {} {} | V {:.3f} | vL {:.3f} | ∇ {:.3f}"
-                .format(*data))
-            else:
-                header += ["entropy", "value", "policy_loss", "value_loss", "grad_norm"]
-                data += [logs["entropy"], logs["value"], logs["policy_loss"], logs["value_loss"], logs["grad_norm"]]
+            header = ["update", "Num_Episodes", "duration"]
+            data = [update, eps_idx+1, duration]
+            header += ["return"]
+            data += [return_per_episode]
+            
+            header += ["loss_" + str(key) for key in logs]
+            data += [np.mean([logs[key]["loss"].data for key in logs])]
+            txt_logger.info(
+            "U {} | F {:06} | D {} | rR:μσmM {:.2f} | Mean Loss {:.3f}"
+            .format(*data))
 
-                txt_logger.info(
-                    "U {} | F {:06} | FPS {:04.0f} | D {} | rR:μσmM {:.2f} {:.2f} {:.2f} {:.2f} | F:μσmM {:.1f} {:.1f} {} {} | H {:.3f} | V {:.3f} | pL {:.3f} | vL {:.3f} | ∇ {:.3f}"
-                    .format(*data))
-
-            header += ["return_" + key for key in return_per_episode.keys()]
-            data += return_per_episode.values()
-
-            if status["num_frames"] == 0:
+            if eps_idx == 0:
                 csv_logger.writerow(header)
             csv_logger.writerow(data)
             csv_file.flush()
@@ -223,8 +205,8 @@ if __name__ == "__main__":
 
         # Save status
 
-        if args.save_interval > 0 and update % args.save_interval == 0:
-            status = {"num_frames": num_frames, "update": update,
+        if args.save_interval > 0 and eps_idx % args.save_interval == 0:
+            status = {"num_episodes": eps_idx+1, "update": update,
                     "model_state": model.state_dict(), "optimizer_state": algo.optimizer.state_dict()}
             if hasattr(preprocess_obss, "vocab"):
                 status["vocab"] = preprocess_obss.vocab.vocab
